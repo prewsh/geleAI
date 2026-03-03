@@ -82,7 +82,6 @@ export default function HomePage() {
   const [geleColor, setGeleColor] = useState<GeleColor>("auto");
   const [error, setError] = useState<string>("");
   const [errorDetails, setErrorDetails] = useState<string>("");
-  const [providerMeta, setProviderMeta] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -127,7 +126,6 @@ export default function HomePage() {
 
       setCurrentStage(STAGES[3]);
       setResultImage(transformed.outputImageUrl);
-      setProviderMeta(`${transformed.meta.provider} • ${transformed.meta.model} • ${Math.round(transformed.meta.durationMs / 1000)}s`);
       setScreen("result");
     } catch (transformError) {
       if (intervalRef.current) {
@@ -177,7 +175,6 @@ export default function HomePage() {
 
     setSourceImage(URL.createObjectURL(file));
     setResultImage("");
-    setProviderMeta("");
   }
 
   function resetFlow() {
@@ -306,9 +303,7 @@ export default function HomePage() {
           <section className="space-y-5">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <h2 className="text-2xl">Your transformed portrait</h2>
-              <p className="rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--brand-strong)]">
-                {providerMeta || "Gemini"}
-              </p>
+              
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">

@@ -1,31 +1,38 @@
 # Gele AI
 
-MVP web app to upload a portrait and preview an AI-style transformation that adds a natural Nigerian gele.
+MVP web app to upload a portrait and generate a realistic Nigerian gele style image.
 
 ## Current Status
-- Phase 0 complete: scaffold, lint/type/test/format scripts, env template.
-- Phase 1 complete: 3-screen flow implemented.
-  - Screen 1: Upload + style prompt
-  - Screen 2: Processing states
-  - Screen 3: Result + download + retry
-- Phase 2 and 3 complete:
-  - `/api/transform` now validates multipart input and calls a provider adapter.
-  - Gemini adapter implemented with robust error mapping and response parsing.
-  - Frontend now calls real API flow and renders provider metadata.
-  - Unit + integration tests added for prompt, validation, provider, and route behavior.
-- Phase 4 complete:
-  - API timeout, transient retry, rate limiting, and request IDs implemented.
-  - UI error/retry states hardened.
-- Phase 5 complete (without deployment):
-  - Added UI flow tests for upload/validation/success transitions.
-  - Added manual QA and release-readiness checklist in `docs/PHASE5_QA_CHECKLIST.md`.
+- Phase 0-5 completed.
+- Supabase auth added:
+  - Email/password login and signup
+  - Signup captures full name and country
+  - Username defaults to first name
+- Transform flow is auth-gated:
+  - User can upload first
+  - On transform click, login/signup is required
+  - After successful auth, generation proceeds
+- User dashboard added:
+  - Shows generated images for logged-in user
+  - Images auto-expire after 7 days
+- Daily free quota:
+  - 1 free generation per user per day
+  - Reset at 00:00 Africa/Lagos
+
+## Supabase Setup
+1. Create a Supabase project.
+2. In SQL editor, run: `supabase/schema.sql`
+3. Create a private storage bucket named `generated-images` (or set `SUPABASE_GENERATIONS_BUCKET`).
+4. Ensure email/password auth is enabled.
 
 ## Run Locally
-1. Install dependencies:
+1. Copy `.env.example` to `.env.local`
+2. Fill all required env vars
+3. Install dependencies:
 ```bash
 npm install
 ```
-2. Start dev server:
+4. Start dev server:
 ```bash
 npm run dev
 ```
@@ -41,7 +48,11 @@ npm run dev
 - `npm run format:write`
 
 ## Environment
-Copy `.env.example` to `.env.local` and fill:
+Required:
 - `AI_PROVIDER=gemini`
 - `GEMINI_API_KEY=...`
-- `GEMINI_MODEL=gemini-2.5-flash-image` (or another compatible image-capable Gemini model)
+- `GEMINI_MODEL=gemini-2.5-flash-image`
+- `NEXT_PUBLIC_SUPABASE_URL=...`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY=...`
+- `SUPABASE_SERVICE_ROLE_KEY=...`
+- `SUPABASE_GENERATIONS_BUCKET=generated-images`

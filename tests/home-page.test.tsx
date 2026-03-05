@@ -2,6 +2,26 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import HomePage from "../app/page";
 
+const { mockGetUser, mockSignOut, mockOnAuthStateChange } = vi.hoisted(() => {
+  return {
+    mockGetUser: vi.fn(),
+    mockSignOut: vi.fn(),
+    mockOnAuthStateChange: vi.fn()
+  };
+});
+
+vi.mock("../lib/supabase/client", () => ({
+  createSupabaseBrowserClient: () => ({
+    auth: {
+      getUser: mockGetUser,
+      signOut: mockSignOut,
+      onAuthStateChange: mockOnAuthStateChange,
+      signInWithPassword: vi.fn(),
+      signUp: vi.fn()
+    }
+  })
+}));
+
 const originalFetch = global.fetch;
 const originalCreateObjectURL = URL.createObjectURL;
 const originalRevokeObjectURL = URL.revokeObjectURL;
@@ -19,6 +39,12 @@ describe("HomePage", () => {
   beforeEach(() => {
     URL.createObjectURL = vi.fn(() => "blob:preview-url");
     URL.revokeObjectURL = vi.fn();
+
+    mockGetUser.mockResolvedValue({ data: { user: { id: "user-1", email: "test@example.com" } } });
+    mockSignOut.mockResolvedValue({ error: null });
+    mockOnAuthStateChange.mockImplementation(() => ({
+      data: { subscription: { unsubscribe: vi.fn() } }
+    }));
   });
 
   afterEach(() => {
@@ -48,7 +74,7 @@ describe("HomePage", () => {
       json: async () => ({
         jobId: "test-id",
         status: "completed",
-        outputImageUrl: "data:image/png;base64,ZmFrZQ==",
+        outputImageUrl: "https://example.com/signed-url.png",
         meta: {
           provider: "gemini",
           durationMs: 2200,
@@ -62,6 +88,10 @@ describe("HomePage", () => {
     const input = screen.getByLabelText(/upload portrait image/i) as HTMLInputElement;
     const validFile = new File([new Uint8Array([1, 2, 3])], "portrait.png", { type: "image/png" });
     fireEvent.change(input, { target: { files: [validFile] } });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /logout/i })).toBeInTheDocument();
+    });
 
     fireEvent.click(screen.getByRole("button", { name: /transform portrait/i }));
 

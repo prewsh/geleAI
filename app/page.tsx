@@ -1,10 +1,13 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createSupabaseBrowserClient } from "../lib/supabase/client";
 
 type Screen = "upload" | "processing" | "result";
 type Stage = "Uploading image" | "Analyzing head position" | "Applying gele style" | "Finalizing image";
 type GeleColor = "auto" | "red" | "blue" | "gold" | "green";
+type AuthMode = "login" | "signup";
 
 type TransformApiResponse = {
   jobId: string;
@@ -50,6 +53,12 @@ function slugifyStyle(input: string) {
   return input.trim() || "Classic gele";
 }
 
+function firstNameAsUsername(fullName: string) {
+  const first = fullName.trim().split(/\s+/)[0] || "user";
+  const cleaned = first.toLowerCase().replace(/[^a-z0-9_]/g, "");
+  return cleaned || "user";
+}
+
 async function transformPortrait(file: File, stylePrompt: string, geleColor: GeleColor): Promise<TransformApiResponse> {
   const formData = new FormData();
   formData.append("image", file);
@@ -72,6 +81,14 @@ async function transformPortrait(file: File, stylePrompt: string, geleColor: Gel
 }
 
 export default function HomePage() {
+  const supabase = useMemo(() => {
+    try {
+      return createSupabaseBrowserClient();
+    } catch {
+      return null;
+    }
+  }, []);
+
   const [screen, setScreen] = useState<Screen>("upload");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState<string>("");
@@ -84,10 +101,35 @@ export default function HomePage() {
   const [errorDetails, setErrorDetails] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authFullName, setAuthFullName] = useState("");
+  const [authCountry, setAuthCountry] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [runAfterAuth, setRunAfterAuth] = useState(false);
+
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    if (!supabase) return;
+
+    void supabase.auth.getUser().then(({ data }) => {
+      setIsLoggedIn(Boolean(data.user));
+    });
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsLoggedIn(Boolean(session?.user));
+    });
+
     return () => {
+      subscription.unsubscribe();
       if (sourceImage.startsWith("blob:")) {
         URL.revokeObjectURL(sourceImage);
       }
@@ -96,7 +138,7 @@ export default function HomePage() {
         clearInterval(intervalRef.current);
       }
     };
-  }, [sourceImage]);
+  }, [sourceImage, supabase]);
 
   const stageIndex = useMemo(() => STAGES.indexOf(currentStage), [currentStage]);
 
@@ -133,19 +175,118 @@ export default function HomePage() {
       }
 
       if (transformError instanceof TransformRequestError) {
-        const isRateLimit = transformError.code === "RATE_LIMITED" || transformError.code === "QUOTA_EXCEEDED";
-        const friendlyMessage = isRateLimit
-          ? `Rate limit reached. ${transformError.retryAfterSeconds ? `Retry in ${transformError.retryAfterSeconds}s.` : "Please try again shortly."}`
-          : transformError.message;
-        setError(friendlyMessage);
-        setErrorDetails(transformError.requestId ? `Request ID: ${transformError.requestId}` : "");
+        if (transformError.code === "UNAUTHENTICATED") {
+          setAuthOpen(true);
+          setRunAfterAuth(true);
+          setError("Please login or create an account to generate your image.");
+          setScreen("upload");
+        } else {
+          const isRateLimit =
+            transformError.code === "RATE_LIMITED" ||
+            transformError.code === "QUOTA_EXCEEDED" ||
+            transformError.code === "FREE_DAILY_LIMIT_REACHED";
+          const friendlyMessage = isRateLimit
+            ? transformError.message
+            : transformError.message || "Unable to transform image right now.";
+          setError(friendlyMessage);
+          setErrorDetails(transformError.requestId ? `Request ID: ${transformError.requestId}` : "");
+          setScreen("upload");
+        }
       } else {
         setError(transformError instanceof Error ? transformError.message : "Unexpected transform failure.");
         setErrorDetails("");
+        setScreen("upload");
       }
-      setScreen("upload");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function onTransformClick() {
+    if (!supabase) {
+      setError("Authentication is not configured. Add Supabase env vars and reload.");
+      return;
+    }
+
+    if (!isLoggedIn) {
+      setAuthOpen(true);
+      setAuthMode("login");
+      setRunAfterAuth(true);
+      return;
+    }
+
+    await runTransformFlow();
+  }
+
+  async function handleSignOut() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setIsLoggedIn(false);
+  }
+
+  async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthMessage("");
+
+    if (!supabase) {
+      setAuthLoading(false);
+      setAuthError("Supabase is not configured.");
+      return;
+    }
+
+    try {
+      if (authMode === "signup") {
+        if (!authFullName.trim() || !authCountry.trim()) {
+          setAuthError("Full name and country are required for signup.");
+          return;
+        }
+
+        const username = firstNameAsUsername(authFullName);
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email: authEmail,
+          password: authPassword,
+          options: {
+            data: {
+              full_name: authFullName.trim(),
+              country: authCountry.trim(),
+              username
+            }
+          }
+        });
+
+        if (signUpError) {
+          setAuthError(signUpError.message);
+          return;
+        }
+
+        if (!data.session) {
+          setAuthMessage("Signup successful. Please verify your email, then login.");
+          setAuthMode("login");
+          return;
+        }
+      } else {
+        const { error: loginError } = await supabase.auth.signInWithPassword({
+          email: authEmail,
+          password: authPassword
+        });
+
+        if (loginError) {
+          setAuthError(loginError.message);
+          return;
+        }
+      }
+
+      setAuthOpen(false);
+      setIsLoggedIn(true);
+
+      if (runAfterAuth && selectedFile) {
+        setRunAfterAuth(false);
+        await runTransformFlow();
+      }
+    } finally {
+      setAuthLoading(false);
     }
   }
 
@@ -187,12 +328,41 @@ export default function HomePage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col justify-center px-4 py-8 md:px-8">
       <div className="rounded-3xl border border-orange-100 bg-[var(--bg-panel)]/90 p-6 shadow-[0_24px_80px_rgba(190,95,35,0.14)] backdrop-blur md:p-10">
-        <div className="mb-8">
-          <p className="mb-2 text-sm font-semibold uppercase tracking-[0.22em] text-[var(--brand)]">Gele AI</p>
-          <h1 className="text-3xl leading-tight md:text-5xl">Add gele to your portrait picture in 3seconds.</h1>
-          <p className="mt-3 max-w-2xl text-sm text-[var(--muted)] md:text-base">
-            See which color of gele matches your cloth, see how you will look before you try.
-          </p>
+        <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="mb-2 text-sm font-semibold uppercase tracking-[0.22em] text-[var(--brand)]">Gele AI</p>
+            <h1 className="text-3xl leading-tight md:text-5xl">Add gele to your portrait picture in 3 seconds.</h1>
+            <p className="mt-3 max-w-2xl text-sm text-[var(--muted)] md:text-base">
+              Sign in to generate. Each account gets one free generation per day (resets at 00:00 Africa/Lagos).
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {isLoggedIn ? (
+              <>
+                <Link href="/dashboard" className="rounded-xl border border-orange-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-orange-50">
+                  Dashboard
+                </Link>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="rounded-xl border border-orange-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-orange-50"
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode("login");
+                  setAuthOpen(true);
+                }}
+                className="rounded-xl border border-orange-300 bg-white px-4 py-2 text-sm font-semibold hover:bg-orange-50"
+              >
+                Login / Signup
+              </button>
+            )}
+          </div>
         </div>
 
         {screen === "upload" && (
@@ -248,7 +418,7 @@ export default function HomePage() {
               <button
                 type="button"
                 disabled={!selectedFile || isSubmitting}
-                onClick={runTransformFlow}
+                onClick={() => void onTransformClick()}
                 className="rounded-xl bg-[var(--brand)] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[var(--brand-strong)] disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {isSubmitting ? "Transforming..." : "Transform portrait"}
@@ -256,7 +426,7 @@ export default function HomePage() {
               {error && selectedFile ? (
                 <button
                   type="button"
-                  onClick={runTransformFlow}
+                  onClick={() => void onTransformClick()}
                   disabled={isSubmitting}
                   className="rounded-xl border border-orange-300 bg-white px-5 py-3 text-sm font-semibold text-[var(--ink)] transition hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-45"
                 >
@@ -303,7 +473,6 @@ export default function HomePage() {
           <section className="space-y-5">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <h2 className="text-2xl">Your transformed portrait</h2>
-              
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
@@ -339,10 +508,93 @@ export default function HomePage() {
               >
                 Try another image
               </button>
+              {isLoggedIn ? (
+                <Link href="/dashboard" className="rounded-xl border border-orange-300 px-5 py-3 text-sm font-semibold text-[var(--ink)] transition hover:bg-orange-50">
+                  View my images
+                </Link>
+              ) : null}
             </div>
           </section>
         )}
       </div>
+
+      {authOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-orange-100 bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-semibold">{authMode === "login" ? "Login" : "Create account"}</h2>
+              <button
+                type="button"
+                onClick={() => setAuthOpen(false)}
+                className="rounded-lg border border-orange-200 px-2 py-1 text-xs font-semibold text-[var(--muted)]"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mb-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAuthMode("login")}
+                className={`rounded-lg px-3 py-2 text-sm font-semibold ${authMode === "login" ? "bg-orange-100 text-[var(--brand-strong)]" : "bg-gray-100"}`}
+              >
+                Login
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthMode("signup")}
+                className={`rounded-lg px-3 py-2 text-sm font-semibold ${authMode === "signup" ? "bg-orange-100 text-[var(--brand-strong)]" : "bg-gray-100"}`}
+              >
+                Sign up
+              </button>
+            </div>
+
+            <form className="space-y-3" onSubmit={(event) => void handleAuthSubmit(event)}>
+              {authMode === "signup" ? (
+                <>
+                  <input
+                    value={authFullName}
+                    onChange={(event) => setAuthFullName(event.target.value)}
+                    placeholder="Full name"
+                    className="w-full rounded-xl border border-orange-200 px-3 py-2 text-sm"
+                  />
+                  <input
+                    value={authCountry}
+                    onChange={(event) => setAuthCountry(event.target.value)}
+                    placeholder="Country"
+                    className="w-full rounded-xl border border-orange-200 px-3 py-2 text-sm"
+                  />
+                </>
+              ) : null}
+              <input
+                type="email"
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+                placeholder="Email"
+                className="w-full rounded-xl border border-orange-200 px-3 py-2 text-sm"
+              />
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(event) => setAuthPassword(event.target.value)}
+                placeholder="Password"
+                className="w-full rounded-xl border border-orange-200 px-3 py-2 text-sm"
+              />
+
+              {authError ? <p className="text-sm text-red-700">{authError}</p> : null}
+              {authMessage ? <p className="text-sm text-green-700">{authMessage}</p> : null}
+
+              <button
+                disabled={authLoading}
+                type="submit"
+                className="w-full rounded-xl bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                {authLoading ? "Please wait..." : authMode === "login" ? "Login" : "Create account"}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

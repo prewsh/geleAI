@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { resolveTransformProvider } from "../../../lib/ai/provider";
 import { ProviderError } from "../../../lib/ai/types";
+import { listActiveUserGenerations, purgeExpiredGenerations, storeGenerationAndCreateSignedUrl, userHasFreeGenerationToday } from "../../../lib/generations/service";
 import { checkRateLimit, getRateLimitKey } from "../../../lib/server/rate-limit";
+import { createSupabaseAdminClient } from "../../../lib/supabase/admin";
+import { createSupabaseServerClient } from "../../../lib/supabase/server";
 import { TransformResponsePayload } from "../../../lib/transform/types";
 import { parseTransformFormData, ValidationError } from "../../../lib/transform/validation";
 
@@ -45,8 +48,45 @@ export async function POST(request: Request) {
   }
 
   try {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user }
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      const response = NextResponse.json(
+        {
+          status: "error",
+          code: "UNAUTHENTICATED",
+          message: "Please login to continue.",
+          requestId
+        },
+        { status: 401 }
+      );
+      return withRequestId(response, requestId);
+    }
+
     const formData = await request.formData();
     const input = await parseTransformFormData(formData);
+
+    const supabaseAdmin = createSupabaseAdminClient();
+
+    await purgeExpiredGenerations(supabaseAdmin, user.id);
+
+    const alreadyGeneratedToday = await userHasFreeGenerationToday(supabaseAdmin, user.id);
+
+    if (alreadyGeneratedToday) {
+      const response = NextResponse.json(
+        {
+          status: "error",
+          code: "FREE_DAILY_LIMIT_REACHED",
+          message: "You already used your free generation today. Come back after 00:00 (Africa/Lagos).",
+          requestId
+        },
+        { status: 429 }
+      );
+      return withRequestId(response, requestId);
+    }
 
     const provider = resolveTransformProvider();
     let result;
@@ -61,10 +101,20 @@ export async function POST(request: Request) {
       }
     }
 
+    const stored = await storeGenerationAndCreateSignedUrl(supabaseAdmin, {
+      userId: user.id,
+      prompt: input.stylePrompt,
+      geleColor: input.geleColor,
+      base64Image: result.imageBase64,
+      mimeType: result.mimeType,
+      model: result.model,
+      durationMs: Date.now() - startedAt
+    });
+
     const payload: TransformResponsePayload = {
-      jobId: randomUUID(),
+      jobId: stored.generationId,
       status: "completed",
-      outputImageUrl: `data:${result.mimeType};base64,${result.imageBase64}`,
+      outputImageUrl: stored.signedUrl,
       meta: {
         provider: "gemini",
         durationMs: Date.now() - startedAt,
@@ -108,11 +158,35 @@ export async function POST(request: Request) {
       {
         status: "error",
         code: "INTERNAL_ERROR",
-        message: "Unexpected server error while transforming image.",
+        message: error instanceof Error ? error.message : "Unexpected server error while transforming image.",
         requestId
       },
       { status: 500 }
     );
     return withRequestId(response, requestId);
+  }
+}
+
+export async function GET() {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user }
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ status: "error", code: "UNAUTHENTICATED", message: "Please login to continue." }, { status: 401 });
+    }
+
+    const admin = createSupabaseAdminClient();
+    await purgeExpiredGenerations(admin, user.id);
+    const images = await listActiveUserGenerations(admin, user.id);
+
+    return NextResponse.json({ status: "ok", data: images });
+  } catch (error) {
+    return NextResponse.json(
+      { status: "error", code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : "Unexpected error" },
+      { status: 500 }
+    );
   }
 }

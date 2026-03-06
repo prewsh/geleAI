@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { resolveTransformProvider } from "../../../lib/ai/provider";
 import { ProviderError } from "../../../lib/ai/types";
-import { listActiveUserGenerations, purgeExpiredGenerations, storeGenerationAndCreateSignedUrl, userHasFreeGenerationToday } from "../../../lib/generations/service";
+import { getUserFreeGenerationsToday, listActiveUserGenerations, purgeExpiredGenerations, storeGenerationAndCreateSignedUrl } from "../../../lib/generations/service";
 import { checkRateLimit, getRateLimitKey } from "../../../lib/server/rate-limit";
 import { createSupabaseAdminClient } from "../../../lib/supabase/admin";
 import { createSupabaseServerClient } from "../../../lib/supabase/server";
@@ -13,6 +13,7 @@ export const runtime = "nodejs";
 
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 6;
+const FREE_DAILY_LIMIT = 3;
 const TRANSIENT_PROVIDER_CODES = new Set(["TRANSIENT_PROVIDER_FAILURE"]);
 
 function withRequestId(response: NextResponse, requestId: string) {
@@ -73,18 +74,20 @@ export async function POST(request: Request) {
 
     await purgeExpiredGenerations(supabaseAdmin, user.id);
 
-    const alreadyGeneratedToday = await userHasFreeGenerationToday(supabaseAdmin, user.id);
+    const usage = await getUserFreeGenerationsToday(supabaseAdmin, user.id, input.clientTimeZone);
 
-    if (alreadyGeneratedToday) {
+    if (usage.count >= FREE_DAILY_LIMIT) {
       const response = NextResponse.json(
         {
           status: "error",
           code: "FREE_DAILY_LIMIT_REACHED",
-          message: "You already used your free generation today. Come back after 00:00 (Africa/Lagos).",
+          message: "Daily free generation limit reached.",
+          retryAfterSeconds: usage.retryAfterSeconds,
           requestId
         },
         { status: 429 }
       );
+      response.headers.set("retry-after", String(usage.retryAfterSeconds));
       return withRequestId(response, requestId);
     }
 
@@ -108,7 +111,8 @@ export async function POST(request: Request) {
       base64Image: result.imageBase64,
       mimeType: result.mimeType,
       model: result.model,
-      durationMs: Date.now() - startedAt
+      durationMs: Date.now() - startedAt,
+      usageDay: usage.usageDay
     });
 
     const payload: TransformResponsePayload = {

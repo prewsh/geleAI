@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getGenerationsBucket } from "../supabase/config";
 
 const RETENTION_DAYS = 7;
-const LAGOS_TIMEZONE = "Africa/Lagos";
+const FALLBACK_TIMEZONE = "Africa/Lagos";
 
 type GenerationRow = {
   id: string;
@@ -15,13 +15,52 @@ type GenerationRow = {
   expires_at: string;
 };
 
-function todayInLagosDateString() {
+function safeTimeZone(timeZone: string) {
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return FALLBACK_TIMEZONE;
+  }
+}
+
+function dateStringInTimeZone(timeZone: string) {
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: LAGOS_TIMEZONE,
+    timeZone: safeTimeZone(timeZone),
     year: "numeric",
     month: "2-digit",
     day: "2-digit"
   }).format(new Date());
+}
+
+function secondsUntilNextMidnight(timeZone: string) {
+  const tz = safeTimeZone(timeZone);
+  const now = new Date();
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  })
+    .formatToParts(now)
+    .reduce<Record<string, string>>((acc, part) => {
+      if (part.type !== "literal") {
+        acc[part.type] = part.value;
+      }
+      return acc;
+    }, {});
+
+  const hour = Number(parts.hour ?? "0");
+  const minute = Number(parts.minute ?? "0");
+  const second = Number(parts.second ?? "0");
+
+  const elapsed = hour * 3600 + minute * 60 + second;
+  return Math.max(1, 24 * 3600 - elapsed);
 }
 
 function extensionForMime(mimeType: string) {
@@ -60,22 +99,25 @@ export async function purgeExpiredGenerations(supabaseAdmin: SupabaseClient, use
   await supabaseAdmin.from("generations").delete().in("id", ids);
 }
 
-export async function userHasFreeGenerationToday(supabaseAdmin: SupabaseClient, userId: string) {
-  const today = todayInLagosDateString();
+export async function getUserFreeGenerationsToday(supabaseAdmin: SupabaseClient, userId: string, timeZone: string) {
+  const usageDay = dateStringInTimeZone(timeZone);
 
-  const { data, error } = await supabaseAdmin
+  const { count, error } = await supabaseAdmin
     .from("generations")
-    .select("id")
+    .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
-    .eq("usage_day", today)
-    .eq("is_free", true)
-    .limit(1);
+    .eq("usage_day", usageDay)
+    .eq("is_free", true);
 
   if (error) {
     throw new Error(`Failed checking daily generation limit: ${error.message}`);
   }
 
-  return Boolean(data && data.length > 0);
+  return {
+    usageDay,
+    count: count ?? 0,
+    retryAfterSeconds: secondsUntilNextMidnight(timeZone)
+  };
 }
 
 type StoreGenerationInput = {
@@ -86,6 +128,7 @@ type StoreGenerationInput = {
   mimeType: string;
   model: string;
   durationMs: number;
+  usageDay: string;
 };
 
 export async function storeGenerationAndCreateSignedUrl(supabaseAdmin: SupabaseClient, input: StoreGenerationInput) {
@@ -115,6 +158,7 @@ export async function storeGenerationAndCreateSignedUrl(supabaseAdmin: SupabaseC
       model: input.model,
       duration_ms: input.durationMs,
       is_free: true,
+      usage_day: input.usageDay,
       expires_at: expiresAt
     })
     .select("id, created_at, expires_at")
@@ -174,4 +218,23 @@ export async function listActiveUserGenerations(supabaseAdmin: SupabaseClient, u
   );
 
   return signedRows.filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+export async function getGenerationStoragePathForUser(supabaseAdmin: SupabaseClient, userId: string, generationId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("generations")
+    .select("storage_path, expires_at")
+    .eq("id", generationId)
+    .eq("user_id", userId)
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  if (new Date(data.expires_at).getTime() <= Date.now()) {
+    return null;
+  }
+
+  return data.storage_path as string;
 }

@@ -8,6 +8,8 @@ MVP web app to upload a portrait and generate a realistic Nigerian gele style im
   - Email/password login and signup
   - Signup captures full name and country
   - Username defaults to first name
+  - Forgot password + reset password flow
+  - Signup password policy: 8+ chars, uppercase, number
 - Transform flow is auth-gated:
   - User can upload first
   - On transform click, login/signup is required
@@ -16,8 +18,8 @@ MVP web app to upload a portrait and generate a realistic Nigerian gele style im
   - Shows generated images for logged-in user
   - Images auto-expire after 7 days
 - Daily free quota:
-  - 1 free generation per user per day
-  - Reset at 00:00 Africa/Lagos
+  - 3 free generations per user per day
+  - Reset countdown shown when free limit is exhausted
 
 ## Supabase Setup
 1. Create a Supabase project.

@@ -2,6 +2,7 @@ import { ALLOWED_IMAGE_TYPES, AllowedImageMimeType, GELE_COLORS, GeleColor, Tran
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const MAX_STYLE_PROMPT_LENGTH = 240;
+const MAX_TZ_LENGTH = 100;
 
 export class ValidationError extends Error {
   readonly code: string;
@@ -46,7 +47,59 @@ function normalizeStylePrompt(raw: FormDataEntryValue | null): string {
     throw new ValidationError("Style prompt is too long. Keep it under 240 characters.", "PROMPT_TOO_LONG");
   }
 
-  return prompt;
+  return prompt.replace(/[<>]/g, "");
+}
+
+function normalizeClientTimeZone(raw: FormDataEntryValue | null): string {
+  const fallback = "Africa/Lagos";
+
+  if (!raw || typeof raw !== "string") return fallback;
+
+  const timeZone = raw.trim();
+  if (!timeZone || timeZone.length > MAX_TZ_LENGTH) return fallback;
+
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return fallback;
+  }
+}
+
+function matchesFileSignature(bytes: Uint8Array, mimeType: AllowedImageMimeType) {
+  if (mimeType === "image/png") {
+    return (
+      bytes.length > 8 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
+    );
+  }
+
+  if (mimeType === "image/jpeg") {
+    return bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+
+  if (mimeType === "image/webp") {
+    return (
+      bytes.length > 12 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50
+    );
+  }
+
+  return false;
 }
 
 export async function parseTransformFormData(formData: FormData): Promise<TransformInput> {
@@ -67,17 +120,24 @@ export async function parseTransformFormData(formData: FormData): Promise<Transf
   const imageMimeType = toAllowedMimeType(file.type);
   const stylePrompt = normalizeStylePrompt(formData.get("stylePrompt"));
   const geleColor = toGeleColor(formData.get("geleColor"));
+  const clientTimeZone = normalizeClientTimeZone(formData.get("clientTimeZone"));
 
+  const blob = file as unknown as Blob;
   const arrayBuffer =
-    typeof file.arrayBuffer === "function"
-      ? await file.arrayBuffer()
-      : await new Response(file as unknown as Blob).arrayBuffer();
+    typeof blob.arrayBuffer === "function" ? await blob.arrayBuffer() : await new Response(file as unknown as Blob).arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+
+  if (!matchesFileSignature(bytes, imageMimeType)) {
+    throw new ValidationError("Invalid image file signature.", "INVALID_IMAGE_SIGNATURE");
+  }
+
   const imageBase64 = Buffer.from(arrayBuffer).toString("base64");
 
   return {
     imageBase64,
     imageMimeType,
     stylePrompt,
-    geleColor
+    geleColor,
+    clientTimeZone
   };
 }

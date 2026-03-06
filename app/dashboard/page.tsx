@@ -49,6 +49,13 @@ export default async function DashboardPage() {
                   <p className="line-clamp-2 text-sm text-[var(--ink)]">{image.prompt || "No prompt"}</p>
                   <p className="text-xs text-[var(--muted)]">Created: {new Date(image.createdAt).toLocaleString()}</p>
                   <p className="text-xs text-[var(--muted)]">Expires: {new Date(image.expiresAt).toLocaleString()}</p>
+                  <a
+                    href={`/api/generations/${image.id}/download`}
+                    download={`gele-ai-${image.id}.png`}
+                    className="mt-2 inline-block rounded-lg border border-orange-300 px-3 py-1.5 text-xs font-semibold text-[var(--ink)] hover:bg-orange-50"
+                  >
+                    Download image
+                  </a>
                 </div>
               </article>
             ))}

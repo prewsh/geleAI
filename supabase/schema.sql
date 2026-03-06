@@ -24,9 +24,10 @@ create table if not exists public.generations (
   created_at timestamptz not null default now()
 );
 
-create unique index if not exists generations_one_free_per_day
-  on public.generations(user_id, usage_day)
-  where is_free = true;
+drop index if exists generations_one_free_per_day;
+
+create index if not exists generations_user_usage_day_idx
+  on public.generations(user_id, usage_day);
 
 create index if not exists generations_user_created_at_idx
   on public.generations(user_id, created_at desc);

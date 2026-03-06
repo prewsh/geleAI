@@ -39,7 +39,8 @@ describe("GeminiTransformProvider", () => {
       imageBase64: "base64",
       imageMimeType: "image/png",
       stylePrompt: "Classic style",
-      geleColor: "auto"
+      geleColor: "auto",
+      clientTimeZone: "Africa/Lagos"
     });
 
     expect(output.imageBase64).toBe("YWJj");
@@ -65,7 +66,8 @@ describe("GeminiTransformProvider", () => {
         imageBase64: "base64",
         imageMimeType: "image/png",
         stylePrompt: "Classic style",
-        geleColor: "auto"
+        geleColor: "auto",
+        clientTimeZone: "Africa/Lagos"
       })
     ).rejects.toMatchObject({ code: "QUOTA_EXCEEDED", statusCode: 429 });
   });
@@ -80,7 +82,8 @@ describe("GeminiTransformProvider", () => {
         imageBase64: "base64",
         imageMimeType: "image/png",
         stylePrompt: "Classic style",
-        geleColor: "auto"
+        geleColor: "auto",
+        clientTimeZone: "Africa/Lagos"
       })
     ).rejects.toMatchObject({ code: "PROVIDER_TIMEOUT", statusCode: 504 });
   });

@@ -59,11 +59,23 @@ function firstNameAsUsername(fullName: string) {
   return cleaned || "user";
 }
 
+function formatResetCountdown(seconds: number) {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+
+  if (hrs > 0) {
+    return `${hrs}h ${mins}m`;
+  }
+
+  return `${Math.max(1, mins)}m`;
+}
+
 async function transformPortrait(file: File, stylePrompt: string, geleColor: GeleColor): Promise<TransformApiResponse> {
   const formData = new FormData();
   formData.append("image", file);
   formData.append("stylePrompt", stylePrompt);
   formData.append("geleColor", geleColor);
+  formData.append("clientTimeZone", Intl.DateTimeFormat().resolvedOptions().timeZone || "Africa/Lagos");
 
   const response = await fetch("/api/transform", {
     method: "POST",
@@ -110,22 +122,46 @@ export default function HomePage() {
   const [authError, setAuthError] = useState("");
   const [authMessage, setAuthMessage] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [remainingGenerations, setRemainingGenerations] = useState(3);
   const [runAfterAuth, setRunAfterAuth] = useState(false);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  async function refreshUsage() {
+    try {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Africa/Lagos";
+      const response = await fetch(`/api/account/usage?tz=${encodeURIComponent(timeZone)}`);
+      if (!response.ok) return;
+      const payload = (await response.json()) as { data?: { remaining?: number } };
+      setRemainingGenerations(payload.data?.remaining ?? 3);
+    } catch {
+      // keep previous value if usage lookup fails
+    }
+  }
 
   useEffect(() => {
     if (!supabase) return;
 
     void supabase.auth.getUser().then(({ data }) => {
-      setIsLoggedIn(Boolean(data.user));
+      const loggedIn = Boolean(data.user);
+      setIsLoggedIn(loggedIn);
+      if (loggedIn) {
+        void refreshUsage();
+      }
     });
 
     const {
       data: { subscription }
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setIsLoggedIn(Boolean(session?.user));
+      const loggedIn = Boolean(session?.user);
+      setIsLoggedIn(loggedIn);
+      if (loggedIn) {
+        void refreshUsage();
+      } else {
+        setRemainingGenerations(3);
+      }
     });
 
     return () => {
@@ -168,6 +204,7 @@ export default function HomePage() {
 
       setCurrentStage(STAGES[3]);
       setResultImage(transformed.outputImageUrl);
+      await refreshUsage();
       setScreen("result");
     } catch (transformError) {
       if (intervalRef.current) {
@@ -181,12 +218,13 @@ export default function HomePage() {
           setError("Please login or create an account to generate your image.");
           setScreen("upload");
         } else {
-          const isRateLimit =
-            transformError.code === "RATE_LIMITED" ||
-            transformError.code === "QUOTA_EXCEEDED" ||
-            transformError.code === "FREE_DAILY_LIMIT_REACHED";
-          const friendlyMessage = isRateLimit
-            ? transformError.message
+          const isFreeLimitReached = transformError.code === "FREE_DAILY_LIMIT_REACHED";
+          const resetText =
+            isFreeLimitReached && transformError.retryAfterSeconds
+              ? `{reset in ${formatResetCountdown(transformError.retryAfterSeconds)}}`
+              : "";
+          const friendlyMessage = isFreeLimitReached
+            ? `You've used your 3 free generations for today. ${resetText}`.trim()
             : transformError.message || "Unable to transform image right now.";
           setError(friendlyMessage);
           setErrorDetails(transformError.requestId ? `Request ID: ${transformError.requestId}` : "");
@@ -222,6 +260,7 @@ export default function HomePage() {
     if (!supabase) return;
     await supabase.auth.signOut();
     setIsLoggedIn(false);
+    setRemainingGenerations(3);
   }
 
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
@@ -240,6 +279,15 @@ export default function HomePage() {
       if (authMode === "signup") {
         if (!authFullName.trim() || !authCountry.trim()) {
           setAuthError("Full name and country are required for signup.");
+          return;
+        }
+
+        const passwordHasUpper = /[A-Z]/.test(authPassword);
+        const passwordHasNumber = /[0-9]/.test(authPassword);
+        const passwordLongEnough = authPassword.length >= 8;
+
+        if (!passwordHasUpper || !passwordHasNumber || !passwordLongEnough) {
+          setAuthError("Password must be at least 8 characters and include an uppercase letter and a number.");
           return;
         }
 
@@ -280,6 +328,7 @@ export default function HomePage() {
 
       setAuthOpen(false);
       setIsLoggedIn(true);
+      await refreshUsage();
 
       if (runAfterAuth && selectedFile) {
         setRunAfterAuth(false);
@@ -288,6 +337,30 @@ export default function HomePage() {
     } finally {
       setAuthLoading(false);
     }
+  }
+
+  async function handleForgotPassword() {
+    if (!supabase) {
+      setAuthError("Supabase is not configured.");
+      return;
+    }
+
+    if (!authEmail.trim()) {
+      setAuthError("Enter your email first, then click forgot password.");
+      return;
+    }
+
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(authEmail.trim(), {
+      redirectTo: `${window.location.origin}/auth/reset-password`
+    });
+
+    if (resetError) {
+      setAuthError(resetError.message);
+      return;
+    }
+
+    setAuthError("");
+    setAuthMessage("Password reset email sent. Check your inbox.");
   }
 
   function handleImageInput(event: ChangeEvent<HTMLInputElement>) {
@@ -333,7 +406,9 @@ export default function HomePage() {
             <p className="mb-2 text-sm font-semibold uppercase tracking-[0.22em] text-[var(--brand)]">Gele AI</p>
             <h1 className="text-3xl leading-tight md:text-5xl">Add gele to your portrait picture in 3 seconds.</h1>
             <p className="mt-3 max-w-2xl text-sm text-[var(--muted)] md:text-base">
-              Sign in to generate. Each account gets one free generation per day (resets at 00:00 Africa/Lagos).
+              {isLoggedIn
+                ? `you have ${remainingGenerations} generation${remainingGenerations === 1 ? "" : "s"} remaining`
+                : "Sign in to tie gele. Each account gets 3 free generation per day."}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -574,12 +649,25 @@ export default function HomePage() {
                 className="w-full rounded-xl border border-orange-200 px-3 py-2 text-sm"
               />
               <input
-                type="password"
+                type={showPassword ? "text" : "password"}
                 value={authPassword}
                 onChange={(event) => setAuthPassword(event.target.value)}
                 placeholder="Password"
                 className="w-full rounded-xl border border-orange-200 px-3 py-2 text-sm"
               />
+              <div className="flex items-center justify-between text-xs text-[var(--muted)]">
+                <button type="button" onClick={() => setShowPassword((value) => !value)} className="font-semibold hover:text-[var(--brand-strong)]">
+                  {showPassword ? "Hide password" : "View password"}
+                </button>
+                {authMode === "login" ? (
+                  <button type="button" onClick={() => void handleForgotPassword()} className="font-semibold hover:text-[var(--brand-strong)]">
+                    Forgot password?
+                  </button>
+                ) : null}
+              </div>
+              {authMode === "signup" ? (
+                <p className="text-xs text-[var(--muted)]">Use at least 8 characters, one uppercase letter, and one number.</p>
+              ) : null}
 
               {authError ? <p className="text-sm text-red-700">{authError}</p> : null}
               {authMessage ? <p className="text-sm text-green-700">{authMessage}</p> : null}

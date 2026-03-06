@@ -10,6 +10,7 @@ export type TransformInput = {
   imageMimeType: AllowedImageMimeType;
   stylePrompt: string;
   geleColor: GeleColor;
+  clientTimeZone: string;
 };
 
 export type TransformResponsePayload = {
